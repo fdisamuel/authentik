@@ -13,7 +13,6 @@ from authentik.lib.sync.mapper import PropertyMappingManager
 from authentik.sources.ldap.models import LDAPPropertyMapping, LDAPSource
 from authentik.sources.ldap.sync.base import LDAP_UNIQUENESS, BaseLDAPSynchronizer, flatten
 
-
 class GroupLDAPSynchronizer(BaseLDAPSynchronizer):
     """Sync LDAP Users and groups into authentik"""
 
@@ -29,17 +28,27 @@ class GroupLDAPSynchronizer(BaseLDAPSynchronizer):
     def name() -> str:
         return "groups"
 
+    def get_user_groups(self, user_dn: str) -> Generator:
+        """Get all groups that a user is part of, including nested groups."""
+        # Search for groups that the user is a direct member of
+        groups = self.search_paginator(
+            search_base=self.base_dn_groups,
+            search_filter=f"(&(objectClass=group)(member={user_dn}))",
+            search_scope=SUBTREE,
+            attributes=[ALL_ATTRIBUTES, ALL_OPERATIONAL_ATTRIBUTES],
+        )
+        for group in groups:
+            # Yield the group
+            yield group
+            # Recursively yield groups that this group is a member of
+            yield from self.get_user_groups(group['dn'])
+
     def get_objects(self, **kwargs) -> Generator:
         if not self._source.sync_groups:
             self.message("Group syncing is disabled for this Source")
             return iter(())
-        return self.search_paginator(
-            search_base=self.base_dn_groups,
-            search_filter=self._source.group_object_filter,
-            search_scope=SUBTREE,
-            attributes=[ALL_ATTRIBUTES, ALL_OPERATIONAL_ATTRIBUTES],
-            **kwargs,
-        )
+        # Replace the original search with a call to get_user_groups
+        return self.get_user_groups(kwargs.get('user_dn', ''))
 
     def sync(self, page_data: list) -> int:
         """Iterate over all LDAP Groups and create authentik_core.Group instances"""
